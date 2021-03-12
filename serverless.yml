@@ -1,0 +1,131 @@
+# lamdalytics is a Google Analytics compatible analytics platform.
+
+service: lamdalytics
+frameworkVersion: '2'
+
+provider:
+  name: aws
+  runtime: go1.x
+  region: us-west-2
+  environment:
+    COLLECTION_STREAM_NAME: ${self:service}-collect
+    RECORD_TABLE_NAME: ${self:service}-records
+    DATA_BUCKET_NAME: ${self:service}-data
+  iamRoleStatements:
+    # Enable access to the collect stream.
+    - Effect: Allow
+      Action:
+        - kinesis:PutRecord
+        - kinesis:PutRecords
+      Resource:
+        - Fn::GetAtt: [ collect-stream, Arn ]
+
+    # Enable access to the records table.
+    - Effect: Allow
+      Action:
+        - dynamodb:Query
+        - dynamodb:Scan
+        - dynamodb:GetItem
+        - dynamodb:PutItem
+        - dynamodb:UpdateItem
+        - dynamodb:DeleteItem
+        - dynamodb:BatchGetItem
+        - dynamodb:BatchWriteItem
+      Resource:
+        - Fn::GetAtt: [ records-table, Arn ]
+
+    # Enable partition syncs into s3.
+    - Effect: Allow
+      Action:
+        - s3:PutObject
+      Resource:
+        - Fn::GetAtt: [ data-bucket, Arn ]
+
+package:
+  exclude:
+    - ./**
+  include:
+    - ./bin/**
+
+functions:
+  # The collector consumes events sent from clients to this endpoint. The data is immediately written to a Kinesis
+  # stream so that it can return quickly to the client. Should we be unable to write the record to Kinesis, then the
+  # call will return a 500.
+  collector:
+    handler: bin/collector
+    events:
+      - http:
+          path: /collect
+          method: get
+          cors: true
+      - http:
+          path: /collect
+          method: post
+          cors: true
+
+  # The recorder receives events from Kinesis and writes them to a dynamodb table. This part of the process handles
+  # filtering, validating, and enriching the raw event data with more information.
+  recorder:
+    handler: bin/recorder
+    events:
+      - stream:
+          enabled: true
+          type: kinesis
+          batchSize: 100
+          startingPosition: TRIM_HORIZON
+          arn:
+            Fn::GetAtt: [ collect-stream, Arn ]
+
+  # The archiver runs batching data over into S3 buckets to later be queried by Athena.
+  archiver:
+    handler: bin/archiver
+    events:
+      - schedule:
+          enabled: true
+          rate: cron(30 * * * * *)
+          inputTransformer:
+            inputPathsMap:
+              eventTime: '$.time'
+            inputTemplate: '{"time":<eventTime>}'
+
+resources:
+  Resources:
+    # Used to collect events as they come into the system.
+    collect-stream:
+      Type: 'AWS::Kinesis::Stream'
+      Properties:
+        Name: ${self:provider.environment.COLLECTION_STREAM_NAME}
+        RetentionPeriodHours: 24
+        ShardCount: 1
+
+    # Used to store events data for a short period of time.
+    records-table:
+      Type: 'AWS::DynamoDB::Table'
+      DeletionPolicy: Retain
+      Properties:
+        TableName: ${self:provider.environment.RECORD_TABLE_NAME}
+        AttributeDefinitions:
+          - AttributeName: partition_key
+            AttributeType: N
+          - AttributeName: range_key
+            AttributeType: S
+        KeySchema:
+          - AttributeName: partition_key
+            KeyType: HASH
+          - AttributeName: range_key
+            KeyType: RANGE
+
+        #==> Comment out the line below to enable provisioned capacity
+        BillingMode: PAY_PER_REQUEST
+
+        #==> Uncomment the lines below to enable provisioned capacity
+        #ProvisionedThroughput:
+        #  ReadCapacityUnits: 1
+        #  WriteCapacityUnits: 1
+
+    # Used to store events for a long period of time.
+    data-bucket:
+      Type: 'AWS::S3::Bucket'
+      DeletionPolicy: Retain
+      Properties:
+        BucketName: ${self:provider.environment.DATA_BUCKET_NAME}
