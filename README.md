@@ -4,13 +4,18 @@ Replicate the Google Analytics platform on top of AWS.
 
 ## Status
 
-Work in progress
+Proof of concept that I'm mostly doing for fun.
+With the way Google as an organization has been going, I've thought about all the analytics trackers out there and how we might replace them.
+I've also been thinking a bit about the analytics system we had at Indeed and the similarities between the two.
+I might generalize this more later on, but for now it's mostly an idea.
 
 - [x] Highly available `/collect` endpoint.
-- [x] Stream, validate, and data from Kinesis into DynamoDB.
+- [x] Stream and filter data from Kinesis into DynamoDB.
+- [ ] Issue and validate tracking ids.
+- [ ] Enrich data with additional metadata about the caller.
 - [x] Archive data from DynamoDB into S3 access in Athena or Presto.
-- [ ] Replicate S3 objects cross region for availability.
-- [ ] Infra setup for Athena
+- [ ] Replicate S3 objects cross region.
+- [ ] Infra setup for Athena.
 - [ ] Default dashboards powered by ....
 
 ## Presto
@@ -24,17 +29,17 @@ Since we won't be using Presto to write the data for us, we need to be aware of 
 ### S3 Key Form
 
 ```
-[path_prefix/][school=west[/...]]/segment
+[path_prefix/][partitioned_by=value[/...]]/segment
 ```
 
 Using this, we can augment our thoughts and align our implementation.
 This will keep fields that are sent together, stored together.
-It'll also make defining hit-type specific tables easy to do.
+It'll also make defining type specific tables easy to do.
 
 ```
-hit_type=event/date=2006-01-02/01
-hit_type=event/date=2006-01-02/02
-hit_type=event/date=2006-01-02/03
+type=event/date=2006-01-02/01
+type=event/date=2006-01-02/02
+type=event/date=2006-01-02/03
 ```
 
 ### Examples
@@ -50,7 +55,7 @@ CREATE TABLE event_analytics (
     date varchar,
 ) WITH (
     format = 'json', 
-    external_location = 's3a://bucket_name/hit_type=event/',
+    external_location = 's3a://bucket_name/type=event/',
     partitioned_by = ARRAY['date'],
 );
 ```
@@ -60,11 +65,11 @@ Here's a generalized definition for a table that stores all.
 ```sql
 CREATE TABLE event_analytics (
     -- ...
-    hit_type varchar,
+    type varchar,
     date varchar,
 ) WITH (
     format = 'json', 
     external_location = 's3a://bucket_name/',
-    partitioned_by = ARRAY['hit_type', 'date'],
+    partitioned_by = ARRAY['type', 'date'],
 );
 ```
